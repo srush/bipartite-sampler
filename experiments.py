@@ -42,7 +42,7 @@ RANDOM = 2
 
 mode = RANDOM
 def main():
-  for size in range(2,30):
+  for size in range(2,50):
     if mode == RANDOMZO:
       m = gen_mat(size, 0.8)
     else:
@@ -51,9 +51,9 @@ def main():
     #print m
     #print m
 
-    # start1 = time.time()
-    # r_perm = ryser(m)
-    # end1  = time.time()
+    start1 = time.time()
+    r_perm = ryser(m)
+    end1  = time.time()
 
     #print "Exact Time:", end - start
     #print r_perm
@@ -69,8 +69,9 @@ def main():
     # n_perm,_ = 0.0, []#naive_permanent(m)
     # end3  = time.time()
 
-    #print "END %s %3f %3f %3f %3f %3f %3f %3f"%(size, end1-start1, end2-start2, end3-start3, r_perm, n_perm, samp_perm, r_perm/samp_perm) 
-    print "END %s %3f "%(size, end2-start2)
+    #print "END %s %3f %3f %3f %3f %3f %3f %3f"%(size, end1-start1, end2-start2, end3-start3, r_perm, n_perm, samp_perm, r_perm/samp_perm)
+    print "END %s %3f %3f %3f %3f"%(size, end1-start1, end2-start2, samp_perm, r_perm/samp_perm) 
+    #print "END %s %3f "%(size, end2-start2)
   
   #n_perm = naive_permanent(m)
   

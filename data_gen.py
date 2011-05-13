@@ -8,6 +8,8 @@ types = {"A":0,"B":1, "C":2, "D":3, "E":4, "F":5, "G":6, "H":7, "I":8, "J":9, "K
 
 rev_types = dict([(v,k) for k, v in types.iteritems()])
 
+
+
 def real_dist():
   dist = {}
   n = len(types)
@@ -23,7 +25,7 @@ def generate_data():
 
   instances = []
   for q, comb in enumerate(itertools.combinations(range(11), 6)):
-    if q > 20: break
+    if q > 100: break
     d = []
     
     for j in comb:

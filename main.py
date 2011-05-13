@@ -1,3 +1,4 @@
+import pickle
 import time
 import math
 from munkres import Munkres, print_matrix
@@ -17,6 +18,7 @@ examples = {"simple": np.array([[1.0,0.0],[0.0,1.0]]),
             "huge": np.eye(20),
             "split" : np.array([[0.5,0.5],[0.5,0.5]]),
             "diff" : np.array([[0.25,0.35],[0.45,0.55]])}
+
 
 def powerset(iterable):
   "powerset([1,2,3]) --> () (1,) (2,) (3,) (1,2) (1,3) (2,3) (1,2,3)"
@@ -127,6 +129,9 @@ def scale_accuracy(X, Y, A):
   return max(abs(T1).max(), abs(T2).max())
 
 
+def factorial(k):
+  return reduce(lambda i,j : i*j, range(1,k+1))
+
 def rem(M, i, j):
   """
   Replace row i, column j with 0, set M[i,j] =1
@@ -147,29 +152,35 @@ class PermanentSampler:
     self.debug = False
   def estimate_permanent(self, mat):
     # lower bound (just one)
+    n = len(mat)
     if not self.zeroone:
       alpha3,_ = munkres(mat)
       largest = mat.max()
-      mat2 = mat / largest 
-      mat3 = self.prescale_matrix(mat, alpha3)
+      mat2 = mat / largest
+      mat3 = self.prescale_matrix(mat2, alpha3)
+      dens = matrix_density(mat2)
+      #print dens
+      #print mat3
     else:
+      largest = 1.0
       mat3 = self.simple_prescale_matrix(mat)
     (X,Y,Z,C) = self.scale_matrix(mat3)
 
     perm, samples = self.sample(C,X,Y,Z)
     #print samples
-    return perm, samples
+    return (largest** n) * perm, samples
  
+
 
   def simple_prescale_matrix(self, mat):
     A = mat.copy()
     n = len(A)
     dens = matrix_density(A)
-    print dens
+    #print dens
     if not dens > .5:
-      alpha1 = (self.delta/3.0) / math.factorial(n) 
+      alpha1 = (self.delta/3.0) / factorial(n) 
     else:
-      alpha1 = (self.delta/3.0) / (math.factorial(n)**3)
+      alpha1 = (self.delta/3.0) / (factorial(n)**3)
 
     for i in range(n):
       for j in range(n):
@@ -263,10 +274,142 @@ class PermanentSampler:
 
     return perm, samples
 
+import data_gen,dist
 NAIVE = 0
 SAMPLE = 1 
 VITERBI = 2
+MANYTOONE = 3
 
+model_names =  {
+  "naive" : NAIVE,
+  "sample" : SAMPLE,
+  "viterbi" : VITERBI,
+  "manyone": MANYTOONE
+  }
+
+def model1(dists, instances, prob_model):
+  f, e = instances.split()
+  e_counts = {}
+  e_ret = {}
+  perm = 1.0 
+  for e_type in e:
+    for f_type in f:
+      t_model = prob_model.prob(dists,f_type,e_type)
+      e_counts.setdefault(e_type, 0.0)
+      e_counts[e_type] += t_model
+    for f_type in f:
+      t_model = prob_model.prob(dists,f_type,e_type)
+      e_ret.setdefault(e_type, [])
+      e_ret[e_type].append((t_model/ e_counts[e_type], f_type) )
+    perm *= e_counts[e_type]
+  return perm, e_ret
+      
+def em(instances, dists, mode, prob_model):
+  f_types, e_types = prob_model.types()
+  psamp = PermanentSampler(0.5,0.1,zeroone=True)
+  n=len(e_types.keys())
+
+  counts = {}
+  total_perm = 0.0
+  #print dists
+  for num,instance in enumerate(instances):
+    #print num, mode
+    mat = prob_model.gen_mat(dists, instance) 
+    if mode == NAIVE:
+      _, samples = naive_permanent(mat)
+    elif mode == SAMPLE:
+      perm, samples_tmp = psamp.estimate_permanent(mat)
+      samples = [ (1.0,s) for s in samples_tmp]
+    elif mode == VITERBI:
+      perm, _ = naive_permanent(mat)
+      _, s = munkres(mat)
+      samples = [ (1.0,s)]
+    elif mode == MANYTOONE:
+      #start = time.time()
+      perm, samples = model1(dists, instance, prob_model)
+      #print time.time() - start
+    #perm, _ = naive_permanent(mat)
+    #print perm, math.log(perm)
+    total_perm += math.log(perm)
+
+    ins_counts = {}
+    for k in instance.f:
+      #ins_counts[k] = np.zeros(n)
+      ins_counts[k] = {}
+
+    a,b = instance.split()
+
+    if mode == MANYTOONE:
+      for eng, eng_counts in samples.iteritems():
+        total_counts = 0.0
+        for exp_count, fre in eng_counts:
+          #print fre, eng
+          ins_counts[fre].setdefault(e_types[eng], 0.0)
+          ins_counts[fre][e_types[eng]] += exp_count
+    else:
+      for p, s in samples:
+        for j, to in enumerate(s):
+          ins_counts[a[j]].setdefault(e_types[b[to]], 0.0)
+          if mode == NAIVE:
+            ins_counts[a[j]][e_types[b[to]]] += p/float(perm)
+          elif mode == SAMPLE:
+            ins_counts[a[j]][e_types[b[to]]] += p/float(len(samples))
+          elif mode == VITERBI:
+            ins_counts[a[j]][e_types[b[to]]] += p
+
+    for k in instance.f:
+      ins_counts[k] = dist.normalize_sparse(ins_counts[k])
+    counts = dist.add_sparse(counts, ins_counts)
+
+
+  dists = dist.maximum_likelihood_sparse(counts)
+  #kl = dist.kl_tables(dists, data_gen.real_dist())
+  #print "PERM: %s %s %s"% (i, total_perm, kl)
+  print "PERM:  %s"% ( total_perm)
+  return dists
+
+
+def viterbi_align_oneone(instance, dists, prob_model):
+  mat = prob_model.gen_mat(dists, instance) 
+  _, s = munkres(mat)
+  return [(i,other) for i,other in enumerate(s) if instance.e[other]<>"*EPS*" and instance.f[i]<>"*EPS*" ]
+
+
+def viterbi_align_manyone(instance, dists, prob_model):
+  a, b = instance.split()
+  ret = []
+  for j, e_type in enumerate(b):
+    m = -100000
+    best = None
+    for i, f_type in enumerate(a):
+      score = prob_model.prob(dists, f_type, e_type)
+      if score > m:
+        m = score
+        best = (i,j)
+        if f_type == '*EPS*':
+          best = -1
+        if e_type == '*EPS*':
+          best = -1
+    if best <> -1:
+      ret.append(best)
+  return ret
+
+def dev_assess(instances, alignments, dists, prob_model, viterbi_fn):
+  all = []
+  test_alignments = []
+  for j, ins in enumerate(instances):
+    
+    res = viterbi_fn(ins, dists, prob_model)    
+    align = alignments[ins.num]
+    score = align.aer(res)
+    test_alignments.append(res)
+    #if j ==0:
+      #print ins.e, ins.f
+      #print res
+    
+  
+    all.append(score)
+  return sum(all) / float(len(all)), test_alignments
 
 def main():
   # m = examples["diff"]
@@ -279,64 +422,67 @@ def main():
   # #print n_perm
 
 
-  import data_gen,dist
 
-  print data_gen.real_dist()
-  instances = data_gen.generate_data()
-  mode = SAMPLE
 
-  dists = dist.rand_dists(dist.types)  
-  psamp = PermanentSampler(0.5,0.1)
-  n=len(dist.types.keys())
-  for i in range(30):
-    counts = {}
-    total_perm = 0.0
-    #print dists
-    for instance in instances:
-      #print instance
-      mat = dist.gen_mat(dists, instance) 
-      #print mat
-      if mode == NAIVE:
-        _, samples = naive_permanent(mat)
-      elif mode == SAMPLE:
-        _, samples_tmp = psamp.estimate_permanent(mat)
-        samples = [ (1.0,s) for s in samples_tmp]
-      elif mode == VITERBI:
-        perm, _ = naive_permanent(mat)
-        _, s = munkres(mat)
-        samples = [ (1.0,s)]
-      #
-      perm, _ = naive_permanent(mat)
-      total_perm += math.log(perm)
-      #print "LOCAL:", perm
-      ins_counts = {}
-      for k in dist.types.keys():
-        ins_counts[k] = np.zeros(n)
+  from align import Align
+  from align import Alignment
+  import sys
+  mode = model_names[sys.argv[3]]
 
-      a,b = instance
-      for p, s in samples:
-        #print p/float(perm)
-        for j, to in enumerate(s):
-          #print a[j]+":"+b[to], 
-          if mode == NAIVE:
-            ins_counts[a[j]][dist.types[b[to]]] += p/float(perm)
-          elif mode == SAMPLE:
-            ins_counts[a[j]][dist.types[b[to]]] += p/float(len(samples))
-          elif mode == VITERBI:
-            ins_counts[a[j]][dist.types[b[to]]] += p
-        #print
-      for k in dist.types.keys():
-        ins_counts[k] = dist.normalize(ins_counts[k])
-      counts = dist.add(counts, ins_counts)
-      #print "COUNTS"
-      #print counts
+  align = Align.from_files("data/eng-fr.full.fr","data/eng-fr.full.en")
+  e_types, f_types = align.types()
+
+  prob_model = dist.ProbModel(f_types, e_types)
+  
+  test_align = Align.from_files("data/eng-fr.dev.fr","data/eng-fr.dev.en", True)
+  gold_align= Alignment.read_alignments("data/eng-fr.dev.align")
+  if sys.argv[1] == "train":
+  
+    dists = prob_model.rand_dists_sparse()  
+    instances = align.instances()
+    test_instances = test_align.instances()
+    for r in range(20):
       
-    dists = dist.maximum_likelihood(counts)
-    kl = dist.kl_tables(dists, data_gen.real_dist())
-    #print "PROBS"
-    #print dists
-    print "PERM: %s %s %s"% (i, total_perm, kl)
+      if mode == MANYTOONE:
+        score,_ = dev_assess(test_instances, gold_align, dists, prob_model, viterbi_align_manyone)
+      else:
+        score,_ = dev_assess(test_instances, gold_align, dists, prob_model, viterbi_align_oneone)
+      dists = em(instances, dists, mode, prob_model)
+      #print "Dist 'le'"
+      #for i, lscore in enumerate(dists['le']):
+      #  if lscore > 1e-4:
+      #    print i, align.eng_to_ind(i), lscore
+      print "Score is:", score
+    final_dist = dists
+    pickle.dump(final_dist, open(sys.argv[2], 'wb'))
 
+  elif sys.argv[1] == "test":
+    dists = pickle.load(open(sys.argv[2], 'rb'))
+    
+    instances = test_align.instances()
+    
+
+    if mode == MANYTOONE:
+      score,alignments = dev_assess(instances, gold_align, dists, prob_model, viterbi_align_manyone)
+    else:
+      score,alignments = dev_assess(instances, gold_align, dists, prob_model, viterbi_align_oneone)
+    print score
+    f_out = open("out.f", 'w')
+    e_out = open("out.e", 'w')
+    a_out = open("out.a", 'w')
+    gold_out = open("out.gold.a", 'w')
+    for ins,align in zip(instances,alignments):
+      print >>f_out, " ".join( ins.f)
+      print >>e_out, " ".join(ins.e)
+      print >>a_out, " ".join([str(e)+"-"+str(f) for e, f in align])
+      print >>gold_out, " ".join([str(e)+"-"+str(f) for e, f in gold_align[ins.num]])
+    
+#   print data_gen.real_dist()
+#   instances = data_gen.generate_data()
+#   mode = SAMPLE
+
+#   em(instances, mode,dist.types)
+ 
 
 if __name__== "__main__":
   main()
